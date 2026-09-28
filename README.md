@@ -12,12 +12,6 @@ This repository contains my assignment submissions for the **Kalpavriksha Progra
 - A **Pull Request** is raised from the assignment branch into `main` for mentor review.
 - `main` contains only this README until reviews are complete.
 
-## Assignments
-
-| # | Assignment | Branch | Status |
-|---|------------|--------|--------|
-| 1 | Console Calculator (expression evaluation with DMAS) | `assignment-1-calculator` | In progress |
-| 2 | CRUD Operations on File (`users.txt`) | `assignment-2-file-crud` | In progress |
 
 ## Program Topics
 
