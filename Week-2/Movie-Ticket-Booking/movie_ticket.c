@@ -1,14 +1,20 @@
 #include <stdio.h>
 
-#define MAX_NAME_LEN 50
-#define MIN_TICKETS 1
-#define MAX_TICKETS 20
-#define DISCOUNT_MIN_TICKETS 5
-#define DISCOUNT_RATE 0.10
+enum {
+    MAX_NAME_LEN = 50,
+    MIN_TICKETS = 1,
+    MAX_TICKETS = 20,
+    DISCOUNT_MIN_TICKETS = 5
+};
 
+const double DISCOUNT_RATE = 0.10;
 const double STANDARD_PRICE = 150;
 const double PREMIUM_PRICE = 250;
 const double RECLINER_PRICE = 400;
+
+enum Category { STANDARD = 1, PREMIUM = 2, RECLINER = 3 };
+
+enum InputStatus { INPUT_OK, ERR_NAME, ERR_TICKETS, ERR_CATEGORY };
 
 struct Customer {
     char name[MAX_NAME_LEN];
@@ -16,71 +22,102 @@ struct Customer {
     int categoryChoice;
 };
 
-// reads and validates the input; returns 1 if valid, 0 otherwise
-int takeInputs(struct Customer *c) {
-    printf("Enter the customer name: ");
-    if (scanf("%49s", c->name) != 1) {
+struct CategoryInfo {
+    const char *name;
+    double price;
+};
+
+// the only place that maps a category to its name and price;
+// returns 0 for an unknown category instead of guessing a value
+int getCategoryInfo(int category, struct CategoryInfo *info) {
+    switch (category) {
+        case STANDARD:
+            info->name = "Standard";
+            info->price = STANDARD_PRICE;
+            return 1;
+        case PREMIUM:
+            info->name = "Premium";
+            info->price = PREMIUM_PRICE;
+            return 1;
+        case RECLINER:
+            info->name = "Recliner";
+            info->price = RECLINER_PRICE;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// only reads and validates; it never prints
+enum InputStatus takeInputs(struct Customer *customer) {
+    struct CategoryInfo info;
+
+    if (scanf("%49s", customer->name) != 1) return ERR_NAME;
+
+    if (scanf("%d", &customer->noOfTickets) != 1 ||
+        customer->noOfTickets < MIN_TICKETS || customer->noOfTickets > MAX_TICKETS) {
+        return ERR_TICKETS;
+    }
+
+    if (scanf("%d", &customer->categoryChoice) != 1 ||
+        !getCategoryInfo(customer->categoryChoice, &info)) {
+        return ERR_CATEGORY;
+    }
+    return INPUT_OK;
+}
+
+void showError(enum InputStatus status) {
+    if (status == ERR_NAME) {
         printf("Error: invalid name.\n");
-        return 0;
-    }
-
-    printf("Enter the number of tickets: ");
-    if (scanf("%d", &c->noOfTickets) != 1 ||
-        c->noOfTickets < MIN_TICKETS || c->noOfTickets > MAX_TICKETS) {
+    } else if (status == ERR_TICKETS) {
         printf("Error: number of tickets must be between %d and %d.\n", MIN_TICKETS, MAX_TICKETS);
-        return 0;
-    }
-
-    printf("Enter category (1 = Standard, 2 = Premium, 3 = Recliner): ");
-    if (scanf("%d", &c->categoryChoice) != 1 ||
-        c->categoryChoice < 1 || c->categoryChoice > 3) {
+    } else if (status == ERR_CATEGORY) {
         printf("Error: category must be 1, 2 or 3.\n");
-        return 0;
-    }
-    return 1;
-}
-
-double getPrice(int category) {
-    switch (category) {
-        case 1: return STANDARD_PRICE;
-        case 2: return PREMIUM_PRICE;
-        case 3: return RECLINER_PRICE;
-        default: return 0;
     }
 }
 
-const char *getCategoryName(int category) {
-    switch (category) {
-        case 1: return "Standard";
-        case 2: return "Premium";
-        case 3: return "Recliner";
-        default: return "Unknown";
-    }
+double calculateSubtotal(double price, int noOfTickets) {
+    return price * noOfTickets;
 }
 
-void showOutput(const struct Customer *c) {
-    double subtotal = getPrice(c->categoryChoice) * c->noOfTickets;
-    double discount;
-
-    if (c->noOfTickets >= DISCOUNT_MIN_TICKETS) {
-        discount = subtotal * DISCOUNT_RATE;
-    } else {
-        discount = 0;
+double calculateDiscount(double subtotal, int noOfTickets) {
+    if (noOfTickets >= DISCOUNT_MIN_TICKETS) {
+        return subtotal * DISCOUNT_RATE;
     }
-    double finalBill = subtotal - discount;
+    return 0;
+}
 
-    printf("Customer: %s\n", c->name);
-    printf("Ticket Category: %s\n", getCategoryName(c->categoryChoice));
-    printf("Tickets: %d\n", c->noOfTickets);
+double calculateFinalBill(double subtotal, double discount) {
+    return subtotal - discount;
+}
+
+// only prints the values it is given
+void showOutput(const struct Customer *customer, const char *categoryName,
+                double subtotal, double discount, double finalBill) {
+    printf("Customer: %s\n", customer->name);
+    printf("Ticket Category: %s\n", categoryName);
+    printf("Tickets: %d\n", customer->noOfTickets);
     printf("Subtotal: %.2f\n", subtotal);
     printf("Discount: %.2f\n", discount);
     printf("Final Bill: %.2f\n", finalBill);
 }
 
 int main() {
-    struct Customer c1;
+    struct Customer customer;
+    struct CategoryInfo info;
 
-    if (!takeInputs(&c1)) return 1;
-    showOutput(&c1);
+    enum InputStatus status = takeInputs(&customer);
+    if (status != INPUT_OK) {
+        showError(status);
+        return 1;
+    }
+
+    getCategoryInfo(customer.categoryChoice, &info);
+
+    double subtotal = calculateSubtotal(info.price, customer.noOfTickets);
+    double discount = calculateDiscount(subtotal, customer.noOfTickets);
+    double finalBill = calculateFinalBill(subtotal, discount);
+
+    showOutput(&customer, info.name, subtotal, discount, finalBill);
     return 0;
 }
