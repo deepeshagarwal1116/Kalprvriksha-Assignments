@@ -27,8 +27,6 @@ struct CategoryInfo {
     double price;
 };
 
-// the only place that maps a category to its name and price;
-// returns 0 for an unknown category instead of guessing a value
 int getCategoryInfo(int category, struct CategoryInfo *info) {
     switch (category) {
         case STANDARD:
@@ -48,7 +46,6 @@ int getCategoryInfo(int category, struct CategoryInfo *info) {
     }
 }
 
-// only reads and validates; it never prints
 enum InputStatus takeInputs(struct Customer *customer) {
     struct CategoryInfo info;
 
@@ -91,7 +88,6 @@ double calculateFinalBill(double subtotal, double discount) {
     return subtotal - discount;
 }
 
-// only prints the values it is given
 void showOutput(const struct Customer *customer, const char *categoryName,
                 double subtotal, double discount, double finalBill) {
     printf("Customer: %s\n", customer->name);
