@@ -3,7 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 
-#define MAX_REPORTS 50
+#define INITIAL_REPORT_CAPACITY 4
 #define NAME_LEN 50
 #define LINE_LEN 100
 #define INDENT 4
@@ -15,7 +15,6 @@ enum Status {
     ERR_DUPLICATE_ID,
     ERR_MANAGER_NOT_FOUND,
     ERR_SELF_MANAGER,
-    ERR_FULL,
     ERR_MEMORY,
     ERR_NOT_FOUND,
     ERR_REMOVE_CEO
@@ -26,8 +25,9 @@ struct Employee {
     char name[NAME_LEN];
     char designation[NAME_LEN];
     struct Employee *manager;
-    struct Employee *reports[MAX_REPORTS];
+    struct Employee **reports;
     int reportCount;
+    int reportCapacity;
 };
 
 struct Organization {
@@ -42,6 +42,8 @@ int readLine(char *line, int size) {
         *newline = '\0';
         return 1;
     }
+    if (feof(stdin)) return 1;
+
     int ch;
     while ((ch = getchar()) != '\n' && ch != EOF);
     return -1;
@@ -95,6 +97,7 @@ void freeTree(struct Employee *employee) {
     for (int i = 0; i < employee->reportCount; i++) {
         freeTree(employee->reports[i]);
     }
+    free(employee->reports);
     free(employee);
 }
 
@@ -103,34 +106,53 @@ struct Employee *createEmployee(int id, const char *name, const char *designatio
     if (employee == NULL) return NULL;
 
     employee->id = id;
-    strcpy(employee->name, name);
-    strcpy(employee->designation, designation);
+    snprintf(employee->name, sizeof(employee->name), "%s", name);
+    snprintf(employee->designation, sizeof(employee->designation), "%s", designation);
     employee->manager = NULL;
+    employee->reports = NULL;
     employee->reportCount = 0;
+    employee->reportCapacity = 0;
     return employee;
+}
+
+int reserveReports(struct Employee *employee, int extra) {
+    int needed = employee->reportCount + extra;
+    if (needed <= employee->reportCapacity) return 1;
+
+    int capacity = employee->reportCapacity;
+    if (capacity == 0) capacity = INITIAL_REPORT_CAPACITY;
+    while (capacity < needed) capacity *= 2;
+
+    struct Employee **grown = (struct Employee **)realloc(employee->reports, capacity * sizeof(struct Employee *));
+    if (grown == NULL) return 0;
+
+    employee->reports = grown;
+    employee->reportCapacity = capacity;
+    return 1;
+}
+
+enum Status addCeo(struct Organization *org, int id, const char *name, const char *designation) {
+    struct Employee *employee = createEmployee(id, name, designation);
+    if (employee == NULL) return ERR_MEMORY;
+
+    org->ceo = employee;
+    return OK;
 }
 
 enum Status addEmployee(struct Organization *org, int id, const char *name,
                         const char *designation, int managerId) {
     if (findEmployee(org->ceo, id) != NULL) return ERR_DUPLICATE_ID;
+    if (managerId == id) return ERR_SELF_MANAGER;
 
-    struct Employee *manager = NULL;
-    if (org->ceo != NULL) {
-        if (managerId == id) return ERR_SELF_MANAGER;
-        manager = findEmployee(org->ceo, managerId);
-        if (manager == NULL) return ERR_MANAGER_NOT_FOUND;
-        if (manager->reportCount >= MAX_REPORTS) return ERR_FULL;
-    }
+    struct Employee *manager = findEmployee(org->ceo, managerId);
+    if (manager == NULL) return ERR_MANAGER_NOT_FOUND;
+    if (!reserveReports(manager, 1)) return ERR_MEMORY;
 
     struct Employee *employee = createEmployee(id, name, designation);
     if (employee == NULL) return ERR_MEMORY;
 
-    if (manager == NULL) {
-        org->ceo = employee;
-    } else {
-        employee->manager = manager;
-        manager->reports[manager->reportCount++] = employee;
-    }
+    employee->manager = manager;
+    manager->reports[manager->reportCount++] = employee;
     return OK;
 }
 
@@ -168,9 +190,7 @@ enum Status removeEmployee(struct Organization *org, int id) {
     struct Employee *manager = employee->manager;
     struct Employee *target = chooseTarget(manager, employee);
 
-    int targetCount = target->reportCount;
-    if (target == manager) targetCount--;
-    if (targetCount + employee->reportCount > MAX_REPORTS) return ERR_FULL;
+    if (!reserveReports(target, employee->reportCount)) return ERR_MEMORY;
 
     detachFromManager(employee);
     for (int i = 0; i < employee->reportCount; i++) {
@@ -178,6 +198,7 @@ enum Status removeEmployee(struct Organization *org, int id) {
         report->manager = target;
         target->reports[target->reportCount++] = report;
     }
+    free(employee->reports);
     free(employee);
     return OK;
 }
@@ -192,9 +213,6 @@ void showStatus(enum Status status) {
             break;
         case ERR_SELF_MANAGER:
             printf("Error: an employee cannot report to themselves.\n");
-            break;
-        case ERR_FULL:
-            printf("Error: a manager can have at most %d direct reports.\n", MAX_REPORTS);
             break;
         case ERR_MEMORY:
             printf("Error: out of memory.\n");
@@ -211,8 +229,9 @@ void showStatus(enum Status status) {
 }
 
 void handleAdd(struct Organization *org) {
-    int id, managerId = 0;
+    int id, managerId;
     char name[NAME_LEN], designation[NAME_LEN];
+    enum Status status;
 
     if (!readInt("Enter Employee ID: ", &id)) {
         printf("Error: ID must be a positive number.\n");
@@ -225,12 +244,15 @@ void handleAdd(struct Organization *org) {
     }
     if (org->ceo == NULL) {
         printf("First employee becomes the CEO and has no reporting manager.\n");
-    } else if (!readInt("Enter Reporting Manager ID: ", &managerId)) {
-        printf("Error: every employee except the CEO needs a reporting manager ID.\n");
-        return;
+        status = addCeo(org, id, name, designation);
+    } else {
+        if (!readInt("Enter Reporting Manager ID: ", &managerId)) {
+            printf("Error: every employee except the CEO needs a reporting manager ID.\n");
+            return;
+        }
+        status = addEmployee(org, id, name, designation, managerId);
     }
 
-    enum Status status = addEmployee(org, id, name, designation, managerId);
     if (status == OK) printf("Employee added.\n");
     else showStatus(status);
 }
