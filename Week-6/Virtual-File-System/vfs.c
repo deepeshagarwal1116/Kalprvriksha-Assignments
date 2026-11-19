@@ -4,13 +4,8 @@
 
 #define BLOCK_SIZE 512
 #define NUM_BLOCKS 1024
-#define MIN_BLOCKS 1
-#define MAX_BLOCKS 5000
 #define MAX_NAME_LENGTH 50
 #define INPUT_BUFFER_SIZE 8192
-#define PERCENT 100.0
-
-_Static_assert(NUM_BLOCKS >= MIN_BLOCKS && NUM_BLOCKS <= MAX_BLOCKS, "NUM_BLOCKS must be between 1 and 5000");
 
 typedef enum { NODE_FILE, NODE_DIRECTORY } NodeType;
 
@@ -27,7 +22,7 @@ typedef struct FileNode {
     struct FileNode *next;      // circular list of siblings
     struct FileNode *prev;
     struct FileNode *children;  // directories only: first child, NULL when empty
-    int *blockPointers;         // files only: indices into the virtual disk
+    FreeBlock **blockPointers;  // files only: the block nodes this file holds, in order
     int blockCount;
     int contentSize;
 } FileNode;
@@ -39,6 +34,7 @@ typedef struct {
     int freeCount;
     FileNode *root;
     FileNode *cwd;
+    int isRunning;
 } Vfs;
 
 typedef struct {
@@ -62,11 +58,10 @@ void appendFreeBlock(Vfs *vfs, FreeBlock *block)
     vfs->freeCount++;
 }
 
-// removes the head of the free list and returns its disk index; caller must check freeCount
-int takeFreeBlock(Vfs *vfs)
+// unlinks the head of the free list and hands the node to the caller; caller must check freeCount
+FreeBlock *takeFreeBlock(Vfs *vfs)
 {
     FreeBlock *head = vfs->freeHead;
-    int index = head->index;
 
     vfs->freeHead = head->next;
     if (vfs->freeHead != NULL) {
@@ -75,8 +70,10 @@ int takeFreeBlock(Vfs *vfs)
         vfs->freeTail = NULL;
     }
     vfs->freeCount--;
-    free(head);
-    return index;
+
+    head->next = NULL;
+    head->prev = NULL;
+    return head;
 }
 
 void freeBlockChain(FreeBlock *block)
@@ -88,41 +85,17 @@ void freeBlockChain(FreeBlock *block)
     }
 }
 
-// returns a file's blocks to the tail of the free list; all nodes are allocated
-// first, so on failure nothing changes
-int releaseFileBlocks(Vfs *vfs, FileNode *file)
+// moves a file's own block nodes back to the tail of the free list (no allocation, cannot fail)
+void releaseFileBlocks(Vfs *vfs, FileNode *file)
 {
-    FreeBlock *first = NULL;
-    FreeBlock *last = NULL;
-
     for (int i = 0; i < file->blockCount; i++) {
-        FreeBlock *block = malloc(sizeof(FreeBlock));
-        if (block == NULL) {
-            freeBlockChain(first);
-            return -1;
-        }
-
-        block->index = file->blockPointers[i];
-        block->next = NULL;
-        if (last != NULL) {
-            last->next = block;
-        } else {
-            first = block;
-        }
-        last = block;
-    }
-
-    while (first != NULL) {
-        FreeBlock *next = first->next;
-        appendFreeBlock(vfs, first);
-        first = next;
+        appendFreeBlock(vfs, file->blockPointers[i]);
     }
 
     free(file->blockPointers);
     file->blockPointers = NULL;
     file->blockCount = 0;
     file->contentSize = 0;
-    return 0;
 }
 
 /* ---------- directory tree (circular sibling lists) ---------- */
@@ -155,6 +128,9 @@ void freeNode(FileNode *node)
         }
     }
 
+    for (int i = 0; i < node->blockCount; i++) {
+        free(node->blockPointers[i]);
+    }
     free(node->blockPointers);
     free(node);
 }
@@ -364,7 +340,7 @@ int isValidName(const char *name)
     return 1;
 }
 
-// strips surrounding spaces and one pair of matching quotes; returns NULL if malformed
+// strips surrounding spaces and the enclosing quotes; returns NULL unless the text is quoted
 char *parseContent(char *text)
 {
     while (isSpace(*text)) {
@@ -381,7 +357,7 @@ char *parseContent(char *text)
 
     char quote = text[0];
     if (quote != '"' && quote != '\'') {
-        return text;
+        return NULL;
     }
     if (length < 2 || text[length - 1] != quote) {
         return NULL;
@@ -463,26 +439,22 @@ void cmdWrite(Vfs *vfs, char *args)
         return;
     }
 
-    int *pointers = NULL;
+    FreeBlock **pointers = NULL;
     if (needed > 0) {
-        pointers = malloc(needed * sizeof(int));
+        pointers = malloc(needed * sizeof(FreeBlock *));
         if (pointers == NULL) {
             printf("Out of memory.\n");
             return;
         }
     }
 
-    if (releaseFileBlocks(vfs, file) != 0) {
-        free(pointers);
-        printf("Out of memory.\n");
-        return;
-    }
+    releaseFileBlocks(vfs, file);
 
     for (int i = 0; i < needed; i++) {
         int offset = i * BLOCK_SIZE;
         int chunk = (size - offset < BLOCK_SIZE) ? size - offset : BLOCK_SIZE;
         pointers[i] = takeFreeBlock(vfs);
-        memcpy(vfs->disk[pointers[i]], content + offset, chunk);
+        memcpy(vfs->disk[pointers[i]->index], content + offset, chunk);
     }
 
     file->blockPointers = pointers;
@@ -502,7 +474,7 @@ void cmdRead(Vfs *vfs, char *args)
     for (int i = 0; i < file->blockCount; i++) {
         int offset = i * BLOCK_SIZE;
         int chunk = (file->contentSize - offset < BLOCK_SIZE) ? file->contentSize - offset : BLOCK_SIZE;
-        fwrite(vfs->disk[file->blockPointers[i]], 1, chunk, stdout);
+        fwrite(vfs->disk[file->blockPointers[i]->index], 1, chunk, stdout);
     }
     printf("\n");
 }
@@ -515,11 +487,7 @@ void cmdDelete(Vfs *vfs, char *args)
         return;
     }
 
-    if (releaseFileBlocks(vfs, file) != 0) {
-        printf("Out of memory.\n");
-        return;
-    }
-
+    releaseFileBlocks(vfs, file);
     removeChild(vfs->cwd, file);
     freeNode(file);
     printf("File deleted successfully.\n");
@@ -605,7 +573,14 @@ void cmdDf(Vfs *vfs, char *args)
     printf("Total Blocks: %d\n", NUM_BLOCKS);
     printf("Used Blocks: %d\n", used);
     printf("Free Blocks: %d\n", vfs->freeCount);
-    printf("Disk Usage: %.2f%%\n", used * PERCENT / NUM_BLOCKS);
+    printf("Disk Usage: %.2f%%\n", 100.0 * used / NUM_BLOCKS);
+}
+
+void cmdExit(Vfs *vfs, char *args)
+{
+    if (hasNoArguments(args, "exit")) {
+        vfs->isRunning = 0;
+    }
 }
 
 static const Command COMMANDS[] = {
@@ -619,12 +594,14 @@ static const Command COMMANDS[] = {
     { "cd", cmdCd },
     { "pwd", cmdPwd },
     { "df", cmdDf },
+    { "exit", cmdExit },
 };
+
+#define COMMAND_COUNT ((int)(sizeof(COMMANDS) / sizeof(COMMANDS[0])))
 
 const Command *findCommand(const char *name)
 {
-    int count = sizeof(COMMANDS) / sizeof(COMMANDS[0]);
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < COMMAND_COUNT; i++) {
         if (strcmp(COMMANDS[i].name, name) == 0) {
             return &COMMANDS[i];
         }
@@ -632,11 +609,21 @@ const Command *findCommand(const char *name)
     return NULL;
 }
 
+void printUnknownCommand(const char *name)
+{
+    printf("Unknown command '%s'. Commands:", name);
+    for (int i = 0; i < COMMAND_COUNT; i++) {
+        printf("%s %s", i == 0 ? "" : ",", COMMANDS[i].name);
+    }
+    printf("\n");
+}
+
 void runShell(Vfs *vfs)
 {
     char line[INPUT_BUFFER_SIZE];
 
-    while (1) {
+    vfs->isRunning = 1;
+    while (vfs->isRunning) {
         printPath(vfs->cwd);
         printf(" > ");
         fflush(stdout);
@@ -656,14 +643,10 @@ void runShell(Vfs *vfs)
         if (command == NULL) {
             continue;
         }
-        if (strcmp(command, "exit") == 0) {
-            return;
-        }
 
         const Command *entry = findCommand(command);
         if (entry == NULL) {
-            printf("Unknown command '%s'. Commands: mkdir, create, write, read, delete, rmdir, ls, cd, pwd, df, exit\n",
-                   command);
+            printUnknownCommand(command);
             continue;
         }
         entry->run(vfs, cursor);
